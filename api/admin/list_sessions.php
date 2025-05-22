@@ -14,7 +14,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-requireAdmin(); // Tylko administrator może listować sesje
+requireAdminLogin(); // Tylko administrator może listować sesje
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     sendJsonResponse(405, ['status' => 'error', 'message' => 'Niedozwolona metoda. Oczekiwano GET.']);

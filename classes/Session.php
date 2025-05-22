@@ -157,66 +157,80 @@ class VotingSession {
         return $this->_resolutions;
     }
 
-    public function getPublicData(?int $participantId = null): array {
-        // ... (kod tej metody bez zmian, ale dzięki populate() $this->closed_at będzie dostępne)
+        public function getPublicData(): array {
+        if (session_status() === PHP_SESSION_NONE) { 
+            session_start();
+        }
+        $currentSessionPhpId = session_id(); 
+
         $resolutionsData = [];
-        $this->getResolutions();
-        foreach ($this->_resolutions as $resolution) {
+        $this->getResolutions(); // To załaduje uchwały wraz z ich voting_status
+
+        foreach ($this->_resolutions as $resolution) { // $resolution to obiekt Resolution
             $resData = [
                 'resolution_id' => $resolution->resolution_id,
                 'text' => $resolution->text,
                 'number' => $resolution->number,
-                'voted_choice' => null
+                'voting_status' => $resolution->voting_status, // DODAJEMY STATUS GŁOSOWANIA UCHWAŁY
+                'voted_choice' => null 
             ];
-            if ($participantId !== null && $resolution->resolution_id !== null) {
-                $vote = Vote::getVoteByParticipantAndResolution($this->pdo, $participantId, $resolution->resolution_id);
-                if ($vote) { $resData['voted_choice'] = $vote->choice; }
+            
+            if ($resolution->resolution_id !== null && !empty($currentSessionPhpId)) {
+                $vote = Vote::getVoteBySessionPhpIdAndResolution($this->pdo, $currentSessionPhpId, $resolution->resolution_id);
+                if ($vote) {
+                    $resData['voted_choice'] = $vote->choice;
+                }
             }
             $resolutionsData[] = $resData;
         }
+
         return [
-            'session_id' => $this->session_id, 'code' => $this->code, 'title' => $this->title,
-            'status' => $this->status, 'created_at' => $this->created_at,
-            'closed_at' => $this->closed_at, // DODANO closed_at do zwracanych danych
+            'session_id' => $this->session_id,
+            'code' => $this->code,
+            'title' => $this->title,
+            'status' => $this->status, // Status całej sesji (open/closed)
+            'created_at' => $this->created_at,
+            'closed_at' => $this->closed_at, 
             'resolutions' => $resolutionsData,
         ];
     }
 
+    // Metoda getSessionProgress i getResults mogą wymagać drobnych dostosowań, jeśli polegały na liczeniu participant_id.
+    // Na razie getSessionProgress liczy uczestników z tabeli participants, co teraz nie będzie odzwierciedlać anonimowych dołączeń.
+    // getResults liczy total_participants_in_session - to też trzeba będzie przemyśleć.
+    // Dla uproszczenia, na razie zostawmy je tak jak są, ale z adnotacją, że te liczniki mogą być nieprecyzyjne.
+
     public function getSessionProgress(): array|false {
-        // ... (bez zmian w logice, ale $this->closed_at będzie dostępne)
-        if ($this->session_id === null) {
-            error_log("Próba pobrania postępu dla niezaładowanej sesji.");
-            return false;
-        }
-        $stmtParticipants = $this->pdo->prepare("SELECT COUNT(*) FROM participants WHERE session_id = :session_id");
+        if ($this->session_id === null) return false;
+        // UWAGA: Poniższe liczniki bazują na tabeli 'participants', która nie będzie już używana
+        // dla anonimowych nauczycieli. Te dane będą nieprecyzyjne lub zerowe.
+        $stmtParticipants = $this->pdo->prepare("SELECT COUNT(DISTINCT session_php_id) FROM votes v JOIN resolutions r ON v.resolution_id = r.resolution_id WHERE r.session_id = :session_id");
         $stmtParticipants->bindParam(':session_id', $this->session_id, PDO::PARAM_INT);
         $stmtParticipants->execute();
-        $totalJoinedParticipants = (int)$stmtParticipants->fetchColumn();
+        $totalJoinedAndVotedSessions = (int)$stmtParticipants->fetchColumn(); // To jest liczba unikalnych sesji PHP, które oddały głos
+
         $resolutions = $this->getResolutions();
         $totalResolutions = count($resolutions);
-        $stmtVotedOnce = $this->pdo->prepare(
-            "SELECT COUNT(DISTINCT v.participant_id) FROM votes v
-             JOIN resolutions r ON v.resolution_id = r.resolution_id
-             WHERE r.session_id = :session_id"
-        );
-        $stmtVotedOnce->bindParam(':session_id', $this->session_id, PDO::PARAM_INT);
-        $stmtVotedOnce->execute();
-        $participantsVotedAtLeastOnce = (int)$stmtVotedOnce->fetchColumn();
-        $participantsVotedOnAll = 0;
+        
+        // Ile sesji PHP zagłosowało przynajmniej raz (to jest to samo co $totalJoinedAndVotedSessions)
+        $sessionsVotedAtLeastOnce = $totalJoinedAndVotedSessions;
+
+        $sessionsVotedOnAll = 0;
         if ($totalResolutions > 0) {
             $stmtVotedAll = $this->pdo->prepare(
-                "SELECT v.participant_id, COUNT(DISTINCT v.resolution_id) as voted_resolutions
+                "SELECT session_php_id, COUNT(DISTINCT v.resolution_id) as voted_resolutions
                  FROM votes v
                  JOIN resolutions r ON v.resolution_id = r.resolution_id
                  WHERE r.session_id = :session_id
-                 GROUP BY v.participant_id
+                 GROUP BY session_php_id
                  HAVING COUNT(DISTINCT v.resolution_id) = :total_resolutions"
             );
             $stmtVotedAll->bindParam(':session_id', $this->session_id, PDO::PARAM_INT);
             $stmtVotedAll->bindParam(':total_resolutions', $totalResolutions, PDO::PARAM_INT);
             $stmtVotedAll->execute();
-            $participantsVotedOnAll = (int)$stmtVotedAll->rowCount();
+            $sessionsVotedOnAll = (int)$stmtVotedAll->rowCount();
         }
+        
         $stmtTotalVotes = $this->pdo->prepare(
             "SELECT COUNT(v.vote_id) FROM votes v
              JOIN resolutions r ON v.resolution_id = r.resolution_id
@@ -225,30 +239,31 @@ class VotingSession {
         $stmtTotalVotes->bindParam(':session_id', $this->session_id, PDO::PARAM_INT);
         $stmtTotalVotes->execute();
         $totalVotesCasted = (int)$stmtTotalVotes->fetchColumn();
+
         return [
             'session_id' => $this->session_id, 'title' => $this->title, 'status' => $this->status,
-            'created_at' => $this->created_at, 'closed_at' => $this->closed_at, // DODANO closed_at
+            'created_at' => $this->created_at, 'closed_at' => $this->closed_at,
             'total_resolutions' => $totalResolutions,
-            'total_joined_participants' => $totalJoinedParticipants,
-            'participants_voted_at_least_once' => $participantsVotedAtLeastOnce,
-            'participants_voted_on_all_resolutions' => $participantsVotedOnAll,
+            // Te pola są teraz mniej precyzyjne w kontekście "uczestników"
+            'total_unique_voting_sessions' => $totalJoinedAndVotedSessions, // Zmieniona nazwa dla jasności
+            'sessions_voted_at_least_once' => $sessionsVotedAtLeastOnce, // Jak wyżej
+            'sessions_voted_on_all_resolutions' => $sessionsVotedOnAll,
             'total_votes_casted' => $totalVotesCasted,
-            'expected_total_votes' => ($totalResolutions > 0 && $totalJoinedParticipants > 0) ? ($totalJoinedParticipants * $totalResolutions) : 0
+            // 'expected_total_votes' jest trudne do oszacowania bez liczby dołączonych
         ];
     }
-    
+
     public function getResults(): array|false {
-        // ... (bez zmian w logice, ale $this->closed_at będzie dostępne)
-        if ($this->session_id === null) {
-            error_log("Próba pobrania wyników dla niezaładowanej sesji.");
-            return false;
-        }
+        if ($this->session_id === null) return false;
+        // ... (reszta metody getResults bez zmian, ale total_participants_in_session będzie nieprecyzyjne)
+        // ...
         $resolutions = $this->getResolutions();
         if (empty($resolutions)) {
             return [
                 'session_id' => $this->session_id, 'title' => $this->title, 'code' => $this->code,
-                'status' => $this->status, 'created_at' => $this->created_at, 'closed_at' => $this->closed_at, // DODANO closed_at
-                'resolutions_results' => [], 'total_participants_in_session' => 0
+                'status' => $this->status, 'created_at' => $this->created_at, 'closed_at' => $this->closed_at,
+                'resolutions_results' => [], 
+                'total_unique_voting_sessions' => 0 // Zmieniona nazwa dla jasności
             ];
         }
         $allVotesInSession = Vote::getVotesBySession($this->pdo, $this->session_id);
@@ -263,15 +278,18 @@ class VotingSession {
                 ]
             ];
         }
+        // Liczba unikalnych sesji PHP, które oddały głosy w tej sesji głosowania
+        $stmtUniqueSessions = $this->pdo->prepare("SELECT COUNT(DISTINCT session_php_id) FROM votes v JOIN resolutions r ON v.resolution_id = r.resolution_id WHERE r.session_id = :session_id");
+        $stmtUniqueSessions->bindParam(':session_id', $this->session_id, PDO::PARAM_INT);
+        $stmtUniqueSessions->execute();
+        $totalUniqueVotingSessions = (int)$stmtUniqueSessions->fetchColumn();
+
         $sessionInfo = [
             'session_id' => $this->session_id, 'title' => $this->title, 'code' => $this->code,
-            'status' => $this->status, 'created_at' => $this->created_at, 'closed_at' => $this->closed_at, // DODANO closed_at
-            'resolutions_results' => $outputResults
+            'status' => $this->status, 'created_at' => $this->created_at, 'closed_at' => $this->closed_at, 
+            'resolutions_results' => $outputResults,
+            'total_unique_voting_sessions' => $totalUniqueVotingSessions // Zmieniono z total_participants_in_session
         ];
-        $stmtParticipants = $this->pdo->prepare("SELECT COUNT(*) FROM participants WHERE session_id = :session_id");
-        $stmtParticipants->bindParam(':session_id', $this->session_id, PDO::PARAM_INT);
-        $stmtParticipants->execute();
-        $sessionInfo['total_participants_in_session'] = (int) $stmtParticipants->fetchColumn();
         return $sessionInfo;
     }
 }

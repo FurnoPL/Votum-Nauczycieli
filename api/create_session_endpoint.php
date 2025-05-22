@@ -14,7 +14,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-requireAdmin(); 
+requireAdminLogin();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     sendJsonResponse(405, ['status' => 'error', 'message' => 'Niedozwolona metoda. Oczekiwano POST.']);
@@ -53,31 +53,15 @@ $votingSession = new VotingSession($pdo);
 $createdSession = $votingSession->create($title, $creatorId, $resolutionsTexts);
 
 if ($createdSession) {
-    $responseData = $createdSession->getPublicData(); // Użyj getPublicData dla spójności
-    /*
-    $responseData = [ // Można też ręcznie budować, jeśli getPublicData daje za dużo/za mało
-        'session_id' => $createdSession->session_id,
-        'code' => $createdSession->code,
-        'title' => $createdSession->title,
-        'status' => $createdSession->status,
-        'created_at' => $createdSession->created_at,
-        'resolutions' => [] // Można dodać uproszczone dane uchwał, jeśli potrzebne od razu
-    ];
-    $resolutions = Resolution::getBySessionId($pdo, $createdSession->session_id);
-    foreach ($resolutions as $res) {
-        $responseData['resolutions'][] = ['resolution_id' => $res->resolution_id, 'text' => $res->text, 'number' => $res->number];
-    }
-    */
+    $responseData = $createdSession->getPublicData(); 
     sendJsonResponse(201, [
         'status' => 'success', 
         'message' => 'Sesja głosowania została pomyślnie utworzona.', 
-        'data' => $responseData, // Zwróć pełniejsze dane sesji
-        'redirectUrl' => 'admin_dashboard.php?session_created=' . $createdSession->session_id 
+        'data' => $responseData,
+        // ZMIANA TUTAJ:
+        'redirectUrl' => 'results.php?session_id=' . $createdSession->session_id . '&created=true' 
     ]);
 } else {
-    // Warto by było, gdyby $votingSession->create zwracało jakiś komunikat błędu
-    // lub logowało go, aby można było łatwiej debugować.
-    // Na razie ogólny komunikat:
     sendJsonResponse(500, ['status' => 'error', 'message' => 'Nie udało się utworzyć sesji głosowania. Sprawdź logi serwera.']);
 }
 ?>
