@@ -6,7 +6,7 @@
     <!-- Komunikat o błędzie (dynamicznie przez PHP/JS) -->
     <!-- <div class="alert alert-danger">Nieprawidłowy login lub hasło.</div> -->
 
-    <form action="admin_dashboard.php" method="POST"> <!-- Akcja do zmiany na skrypt PHP obsługujący logowanie -->
+    <form action="admin_dashboard.php" method="POST" id="create-session-form"> <!-- Akcja do zmiany na skrypt PHP obsługujący logowanie -->
         <div class="form-group">
             <label for="login">Login (Dyrektor/Wicedyrektor):</label>
             <input type="text" id="login" name="username" class="form-control" required>
